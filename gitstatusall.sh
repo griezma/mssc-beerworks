@@ -1,0 +1,1 @@
+find . -maxdepth 1 -type d -name "mssc-*" -exec sh -c 'cd {} && git status . && echo'  \;

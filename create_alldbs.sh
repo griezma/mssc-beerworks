@@ -1,0 +1,1 @@
+find . -name "create_db.sh" -exec "{}" \;
