@@ -1,0 +1,252 @@
+version: '3.9'
+
+volumes:
+    inventory-service-data:
+    beer-service-data:
+    beerorder-service-data:
+    elasticsearch-data:
+
+networks:
+    default:
+        name: beerworks
+        driver: bridge
+
+services:
+    elasticsearch:
+        image: docker.elastic.co/elasticsearch/elasticsearch:7.10.2
+        container_name: elasticsearch
+        volumes:
+            - elasticsearch-data:/usr/share/elasticsearch/data
+        ports:
+            - 9200:9200
+        environment:
+            discovery.type: single-node
+        restart: on-failure
+
+    kibana:
+        image: docker.elastic.co/kibana/kibana:7.10.2
+        container_name: kibana
+        ports:
+            - 5601:5601
+        restart: on-failure
+        depends_on:
+            - elasticsearch
+            - filebeat
+
+    filebeat:
+        image: docker.elastic.co/beats/filebeat:7.10.2
+        container_name: filebeat
+        command: filebeat -e -strict.perms=false
+        volumes:
+            - ./filebeat/filebeat.docker.yml:/usr/share/filebeat/filebeat.yml:ro
+            - /var/lib/docker/containers:/var/lib/docker/containers:ro
+            - /var/run/docker.sock:/var/run/docker.sock:ro
+        user: root
+        restart: on-failure
+        depends_on:
+            - elasticsearch
+
+    jms:
+        image: vromero/activemq-artemis
+        container_name: artemis-jms
+        ports:
+            - 8161:8161
+
+    zipkin:
+        image: openzipkin/zipkin
+        container_name: zipkin
+        ports:
+            - 9411:9411
+
+    eureka:
+        image: mssc-beerworks-service-registry-jib
+        container_name: service-registry
+        labels:
+            beerworks_service_log: "true"
+        volumes:
+            - ./config:/config:ro
+        depends_on:
+            - zipkin
+        ports:
+            - 8761:8761
+        env_file:
+            - ./mysql.env
+            - ./cloudconfig.env
+
+    configserver:
+        image: mssc-beerworks-config-service-jib
+        container_name: configserver
+        labels:
+            beerworks_service_log: "true"
+        volumes:
+            - ./config:/config:ro
+        depends_on:
+            - eureka
+        ports:
+            - 8888:8888
+        env_file:
+            - ./cloudconfig.env
+        deploy:
+            resources:
+                limits:
+                    memory: 300m
+
+    inventory-db:
+        image: mysql:8
+        container_name: inventory-db
+        ports:
+            - 3308:3306
+        environment:
+            - MYSQL_DATABASE=inventory-service
+            - MYSQL_USER=inventory-service
+        env_file: ./mysql.env
+        volumes:
+            - inventory-service-data:/var/lib/mysql
+
+    inventory-service:
+        image: mssc-beer-inventory-service-jib
+        container_name: inventory-service
+        labels:
+            beerworks_service_log: "true"
+        volumes:
+            - ./config:/config:ro
+        depends_on:
+            - eureka
+            - configserver
+#            - inventory-service-db
+            - jms
+        ports:
+            - 8081:8081
+        env_file:
+            - ./cloudconfig.env
+            - ./h2db.env
+        environment:
+            MYSQL_HOST: inventory-db
+            logging.config: classpath:logback-spring.xml
+        restart: unless-stopped
+        deploy:
+            resources:
+                limits:
+                    memory: 300m
+
+    inventory-failover:
+        image: mssc-beer-inventory-failover-jib
+        container_name: inventory-failover
+        labels:
+            beerworks_service_log: "true"
+        volumes:
+            - ./config:/config:ro
+        depends_on:
+            - eureka
+        ports:
+            - 8083:8083
+        env_file:
+            - ./cloudconfig.env
+        deploy:
+            resources:
+                limits:
+                    memory: 300m
+
+    beer-db:
+        image: mysql:8
+        container_name: beer-db
+        ports:
+            - 3306:3306
+        environment:
+            MYSQL_DATABASE: beerservice
+            MYSQL_USER: beerservice
+        env_file: ./mysql.env
+        volumes:
+            - beer-service-data:/var/lib/mysql
+        deploy:
+            resources:
+                limits:
+                    memory: 300m
+
+    beer-service:
+        image: mssc-beer-service-jib
+        container_name: beer_service
+        labels:
+            beerworks_service_log: "true"
+        volumes:
+            - ./config:/config:ro
+        depends_on:
+            - eureka
+            - configserver
+            - jms
+#            - beer-db
+            - inventory-service
+        ports:
+            - 8080:8080
+        env_file:
+            - ./cloudconfig.env
+            - ./h2db.env
+        environment:
+            MYSQL_HOST: beer-db
+        restart: unless-stopped
+        deploy:
+            resources:
+                limits:
+                    memory: 300m
+
+    beerorder-db:
+        image: mysql:8
+        container_name: beerorder-db
+        ports:
+            - 3307:3306
+        environment:
+            MYSQL_DATABASE: beerorder-service
+            MYSQL_USER: beerorder-service
+        env_file: ./mysql.env
+        volumes:
+            - beerorder-service-data:/var/lib/mysql
+
+    beer-order-service:
+        image: mssc-beer-order-service-jib
+        container_name: beer-order-service
+        labels:
+            beerworks_service_log: "true"
+        volumes:
+            - ./config:/config:ro
+        depends_on:
+            - eureka
+            - configserver
+            - jms
+#            - beerorder-db
+            - beer-service
+        ports:
+            - 8082:8082
+        env_file:
+            - ./cloudconfig.env
+            - ./h2db.env
+        environment:
+            MYSQL_HOST: beerorder-db
+            BEERSERVICE_HOST: beer-service
+        restart: unless-stopped
+        deploy:
+            resources:
+                limits:
+                    memory: 300m
+
+    gateway:
+        image: mssc-beerworks-gateway-jib
+        container_name: api-gateway
+        labels:
+            beerworks_service_log: "true"
+        volumes:
+            - ./config:/config:ro
+        depends_on:
+            - eureka
+            - inventory-service
+            - inventory-failover
+            - beer-service
+            - beer-order-service
+        ports:
+            - 9090:9090
+        env_file:
+            - ./cloudconfig.env
+        deploy:
+            resources:
+                limits:
+                    memory: 300m
+

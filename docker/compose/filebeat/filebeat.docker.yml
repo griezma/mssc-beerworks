@@ -1,0 +1,28 @@
+filebeat.autodiscover:
+  providers:
+    - type: docker
+      hints.enabled: true
+      labels.dedot: true
+      templates:
+        - condition:
+            contains:
+              container.labels.beerworks_service_log: "true"
+          config:
+            - type: container
+              format: docker
+              paths:
+                - "/var/lib/docker/containers/${data.docker.container.id}/*.log"
+              processors:
+                - decode_json_fields:
+                    when.equals:
+                      docker.container.labels.beerworks_service_log: "true"
+                    fields: ["message"]
+                    target: ""
+                    overwrite_keys: true
+
+output.elasticsearch:
+  hosts:
+    - elasticsearch:9200
+
+logging:
+  metrics.enabled: false
